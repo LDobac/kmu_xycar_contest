@@ -282,8 +282,68 @@ class States:
         self.tunnel_left = False
 
         self.crosswalk_detection = []
-        self.crosswalk_wait_time = None
-        self.corsswalk_ignore_time = -1
+        self.crosswalk_wait_time = -1
+        self.crosswalk_ignore_time = -1
+
+class Crosswalk:
+    def __init__(self):
+        dst_size = (256, 256)
+        padding = np.array([22, -40, 22, 6]).astype(float) * (dst_size[0] / 80.0)
+
+        src = (np.array([
+            [286, 277],
+            [0, 406],
+            [376, 277],
+            [639, 400]
+        ], dtype=np.float32)).astype(np.float32)
+        dst = (np.array([
+            [padding[0], padding[1]],
+            [padding[0], dst_size[1] - padding[3] - 1],
+            [dst_size[0] - padding[2] - 1, padding[1]],
+            [dst_size[0] - padding[2] - 1, dst_size[1] - padding[3] - 1]
+        ], dtype=np.float32)).astype(np.float32)
+        T = cv2.getPerspectiveTransform(src, dst)
+
+        self.T = T
+        self.dst_size = dst_size
+
+        self.kernel1 = np.sin(np.linspace(0, np.pi * 2 * 16.5, int(round(256.0 * ((np.pi * 2 * 16.5) / (77 * 2))))).reshape(1, -1))
+        self.kernel2 = np.sign(1.0 / 3.0 - np.abs(np.linspace(-1, 1, 150))).reshape(-1, 1)
+
+        self.buffer = []
+
+    def detect(self, img):
+        warp_img = cv2.warpPerspective(img, self.T, self.dst_size)
+        warp_hls = cv2.cvtColor(warp_img, cv2.COLOR_BGR2HLS)
+        warp_l = warp_hls[..., 1]
+        _, warp_thres = cv2.threshold(warp_l, 200, 255, cv2.THRESH_BINARY)
+        
+        img = warp_thres.astype(float) / 255.0 * 2 - 1
+        result = cv2.filter2D(img, -1, self.kernel1)
+        result = cv2.filter2D((result > 10).astype(float) * 2 - 1, -1, self.kernel2)
+        argmax = result.argmax(axis=0)
+        argmax = argmax[argmax > 80]
+
+        if len(argmax) < 20:
+            y = self.buffer.append(-1)
+        else:
+            y = np.median(argmax)
+
+        self.buffer.append(y)
+        if len(self.buffer) > 5:
+            del self.buffer[0]
+
+        buffer = np.array(self.buffer)
+        if (buffer < 0).sum() > len(self.buffer) // 2:
+            avg_y = None
+        else:
+            avg_y = buffer[buffer >= 0].mean()
+
+        if y > 0:
+            self.warp_img = warp_img
+            self.result = result
+
+        return avg_y, y
 
 def DetectCrosswalk(img, states):
     def skeletonization(img):
@@ -413,6 +473,7 @@ def start():
 
     lidar_mng = LidarManager()
     states = States()
+    crosswalk = Crosswalk()
 
     print('----- Initializing Deep Network -----')
 
@@ -489,19 +550,17 @@ def start():
 
         #vis = cv2.resize(img_112 * 0.5 + x * 0.5, (224, 224))
         
-        # if imu is not None:
-        #     cv2.imwrite('/home/nvidia/output/cam_{:06}.png'.format(frame_index), img)
-        #     cv2.imwrite('/home/nvidia/output/warp_{:06}.png'.format(frame_index), cv2.warpPerspective(img, T, dst_size))
-        #     # cv2.imwrite('/home/nvidia/output/cam_{:06}.png'.format(frame_index), img)
-        #     with open('/home/nvidia/output/imu_{:06}.txt'.format(frame_index), 'w') as txt_file:
-        #         txt_file.write(str(time()) + '\n')
-        #         for value in imu:
-        #             txt_file.write(str(value) + ' ')
-        #         txt_file.write('\n')
-        #         for value in lidar_points:
-        #             txt_file.write(str(value) + ' ')
-        #     frame_index += 1
-        #     pass
+        if imu is not None:
+            cv2.imwrite('/home/nvidia/output/cam_{:06}.png'.format(frame_index), img)
+            # cv2.imwrite('/home/nvidia/output/warp_{:06}.png'.format(frame_index), cv2.warpPerspective(img, T, dst_size))
+            with open('/home/nvidia/output/imu_{:06}.txt'.format(frame_index), 'w') as txt_file:
+                txt_file.write(str(time()) + '\n')
+                for value in imu:
+                    txt_file.write(str(value) + ' ')
+                txt_file.write('\n')
+                for value in lidar_points:
+                    txt_file.write(str(value) + ' ')
+            frame_index += 1
         
         #lidar = np.zeros((360, ), dtype=np.float32)
         #lidar[270:] = lidar_points[:90]
@@ -520,20 +579,42 @@ def start():
             angle += 30
         if lidar[90:130].min() < 0.5:
             angle -= 30
+            
+        curr_time = time()
+        if curr_time > states.crosswalk_ignore_time:
+            if curr_time > states.crosswalk_wait_time:
+                if states.crosswalk_wait_time < 0:
+                    mid, curr_mid = crosswalk.detect(img)
+                    if mid is not None and mid > 190:
+                        states.crosswalk_wait_time = curr_time + 5
 
-        mid = DetectCrosswalk(img, states)
+                    print(mid)
+                    # vis = crosswalk.result
+                    # vis = (vis - vis.min()) / (vis.max() - vis.min())
+                    # vis = np.round(vis * 255).astype(np.uint8)
+                    # vis = cv2.cvtColor(vis, cv2.COLOR_GRAY2BGR)
+                    # vis = vis / 2 + crosswalk.warp_img / 2
+                    # vis = cv2.line(vis, (0, int(mid)), (1000, int(mid)), (0, 0, 255), 2)
+                    # cv2.imshow('crosswalk', vis)
+                else:
+                    states.crosswalk_wait_time = -1
+                    states.crosswalk_ignore_time = curr_time + 10
+            else:
+                speed = 0
+
+        # mid = DetectCrosswalk(img, states)
 
         # drive(angle, speed)
-        if mid is not None:
-            if time() > states.corsswalk_ignore_time:
-                if mid[1] >= 190:
-                    if states.crosswalk_wait_time is None:
-                        states.crosswalk_wait_time = time() + 5
-        if time() < states.crosswalk_wait_time:
-            speed = 0         
-        else:
-            states.corsswalk_ignore_time = time() + 5
-            states.crosswalk_wait_time = None
+        # if mid is not None:
+        #     if time() > states.corsswalk_ignore_time:
+        #         if mid[1] >= 190:
+        #             if states.crosswalk_wait_time is None:
+        #                 states.crosswalk_wait_time = time() + 5
+        # if time() < states.crosswalk_wait_time:
+        #     speed = 0         
+        # else:
+        #     states.corsswalk_ignore_time = time() + 5
+        #     states.crosswalk_wait_time = None
         drive(angle, speed)
 
         #cv2.imshow("img", img)
