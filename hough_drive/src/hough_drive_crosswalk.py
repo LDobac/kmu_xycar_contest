@@ -281,6 +281,99 @@ class States:
         self.inside_tunnel = False
         self.tunnel_left = False
 
+        self.crosswalk_detection = []
+        self.crosswalk_wait_time = None
+        self.corsswalk_ignore_time = -1
+
+def DetectCrosswalk(img, states):
+    def skeletonization(img):
+        result = np.zeros(img.shape, np.uint8)
+
+        # Get a Cross Shaped Kernel
+        element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3,3))
+
+        # Repeat steps 2-4
+        while True:
+        # for _ in range(420):
+            #Step 2: Open the image
+            open = cv2.morphologyEx(img, cv2.MORPH_OPEN, element)
+            #Step 3: Substract open from the original image
+            temp = cv2.subtract(img, open)
+            #Step 4: Erode the original image and refine the skeleton
+            eroded = cv2.erode(img, element)
+            result = cv2.bitwise_or(result,temp)
+            img = eroded.copy()
+            # Step 5: If there are no white pixels left ie.. the image has been completely eroded, quit the loop
+            if cv2.countNonZero(img)==0:
+                break
+
+        return result
+
+    real_dst_size = 257
+
+    dst_size = np.array([81, 81]).astype(float) * (real_dst_size / 80.0)
+    padding = np.array([22, -40, 22, 6]).astype(float) * (real_dst_size / 80.0)
+
+    src = ((np.array([
+        [286, 277],
+        [0, 406],
+        [376, 277],
+        [639, 400]
+    ], dtype=np.float32))).astype(np.float32)
+    dst = (np.array([
+        [padding[0], padding[1]],
+        [padding[0], dst_size[1] - padding[3] - 1],
+        [dst_size[0] - padding[2] - 1, padding[1]],
+        [dst_size[0] - padding[2] - 1, dst_size[1] - padding[3] - 1]
+    ], dtype=np.float32)).astype(np.float32)
+    T = cv2.getPerspectiveTransform(src, dst)
+
+    img = cv2.warpPerspective(img, T, (real_dst_size, real_dst_size))[..., ::-1]
+
+    imgHLS = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
+    imgL = imgHLS[:,:, 1]
+
+    _, imgT = cv2.threshold(imgL, 200, 255, cv2.THRESH_BINARY)
+    imgTS = skeletonization(imgT)
+    
+    threshold = 5
+    minLineLength = 30
+    maxLineGap = 5
+    lines = cv2.HoughLinesP(imgTS, 1, np.pi / 360, threshold, minLineLength=minLineLength, maxLineGap=maxLineGap)
+
+    mids = []
+
+    if lines is not None:
+        for i in range(len(lines)):
+            for x1,y1,x2,y2 in lines[i]:
+                if abs(y2 - y1) < 1:
+                    continue
+
+                theta = np.rad2deg(np.arctan(float(x2 - x1) / float(y2 - y1)))
+                if np.abs(theta) > 20:
+                    continue
+                mids.append(np.array([x1 + x2, y1 + y2]).astype(float) * 0.5)
+
+                c = (0, 0, 255) #np.random.randint(0, 256, (3, ))
+                img = cv2.line(img,(x1,y1),(x2,y2),(int(c[0]), int(c[1]), int(c[2])),2)
+
+    if len(mids) > 0:
+        mid = np.median(mids, axis=0)
+        img = cv2.circle(img, (int(mid[0]), int(mid[1])), 3, (255, 0, 0), -1)
+
+    cv2.imshow("S", img)
+    print(len(mids))
+
+    states.crosswalk_detection.append(len(mids))
+    if len(states.crosswalk_detection) > 10:
+        del states.crosswalk_detection[0]
+    
+    if np.mean(states.crosswalk_detection) >= 12.0:
+        return np.median(mids, axis=0)
+
+    return None
+
+
 #=============================================
 # 실질적인 메인 함수 
 # 카메라 토픽을 받아 각종 영상처리와 알고리즘을 통해
@@ -396,19 +489,19 @@ def start():
 
         #vis = cv2.resize(img_112 * 0.5 + x * 0.5, (224, 224))
         
-        if imu is not None:
-            cv2.imwrite('/home/nvidia/output/cam_{:06}.png'.format(frame_index), img)
-            cv2.imwrite('/home/nvidia/output/warp_{:06}.png'.format(frame_index), cv2.warpPerspective(img, T, dst_size))
-            # cv2.imwrite('/home/nvidia/output/cam_{:06}.png'.format(frame_index), img)
-            with open('/home/nvidia/output/imu_{:06}.txt'.format(frame_index), 'w') as txt_file:
-                txt_file.write(str(time()) + '\n')
-                for value in imu:
-                    txt_file.write(str(value) + ' ')
-                txt_file.write('\n')
-                for value in lidar_points:
-                    txt_file.write(str(value) + ' ')
-            frame_index += 1
-            pass
+        # if imu is not None:
+        #     cv2.imwrite('/home/nvidia/output/cam_{:06}.png'.format(frame_index), img)
+        #     cv2.imwrite('/home/nvidia/output/warp_{:06}.png'.format(frame_index), cv2.warpPerspective(img, T, dst_size))
+        #     # cv2.imwrite('/home/nvidia/output/cam_{:06}.png'.format(frame_index), img)
+        #     with open('/home/nvidia/output/imu_{:06}.txt'.format(frame_index), 'w') as txt_file:
+        #         txt_file.write(str(time()) + '\n')
+        #         for value in imu:
+        #             txt_file.write(str(value) + ' ')
+        #         txt_file.write('\n')
+        #         for value in lidar_points:
+        #             txt_file.write(str(value) + ' ')
+        #     frame_index += 1
+        #     pass
         
         #lidar = np.zeros((360, ), dtype=np.float32)
         #lidar[270:] = lidar_points[:90]
@@ -423,34 +516,33 @@ def start():
             
         speed = abs(error) * P_seed + C_speed
 
-        left_obs_cnt = np.sum(lidar[50:90] < 0.5)
-        right_obs_cnt = np.sum(lidar[90:130] < 0.5)
+        if lidar[50:90].min() < 0.5:
+            angle += 30
+        if lidar[90:130].min() < 0.5:
+            angle -= 30
 
-        obs_angle = 0
-        if left_obs_cnt > right_obs_cnt:
-            obs_angle = 40
-        elif left_obs_cnt < right_obs_cnt:
-            obs_angle = -40
+        mid = DetectCrosswalk(img, states)
 
-        if max(left_obs_cnt, right_obs_cnt) > 30:
-            angle = obs_angle
-        elif max(left_obs_cnt, right_obs_cnt) > 5:
-            angle += obs_angle
-
-        # if lidar[50:90].min() < 0.5:
-        #     angle += 30
-        # if lidar[90:130].min() < 0.5:
-        #     angle -= 30
-
+        # drive(angle, speed)
+        if mid is not None:
+            if time() > states.corsswalk_ignore_time:
+                if mid[1] >= 190:
+                    if states.crosswalk_wait_time is None:
+                        states.crosswalk_wait_time = time() + 5
+        if time() < states.crosswalk_wait_time:
+            speed = 0         
+        else:
+            states.corsswalk_ignore_time = time() + 5
+            states.crosswalk_wait_time = None
         drive(angle, speed)
-        
+
         #cv2.imshow("img", img)
         #cv2.imshow("x", x[..., ::-1])
         #cv2.imshow("x_warp", x_warp[..., ::-1])
         #cv2.imshow("mix", mix * 0.5 + 0.5)
         # cv2.imshow("lidar", 1 - np.clip(np.tile((lidar / 2).reshape(1, -1), (30, 1)), 0, 1))
         #cv2.imshow("lidar_vis", lidar_vis)
-        # cv2.waitKey(1)
+        cv2.waitKey(1)
         
         #print(time() - prev_time)
         
