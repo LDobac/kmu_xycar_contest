@@ -18,13 +18,13 @@ ack_publisher = None
 
 def callback_speed(msg_android_speed):
     global ack_msg
-    ack_msg.drive.speed = msg_android_speed.linear.x
+    ack_msg.drive.speed = msg_android_speed.linear.x / 3
 
 def callback_steering(msg_android_steering):
     global ack_msg
-    ack_msg.drive.steering_angle = msg_android_steering.angular.z
+    ack_msg.drive.steering_angle = msg_android_steering.angular.z / 3
 
-# rospy.init_node("joystick_cam")
+rospy.init_node("joystick_cam")
 rospy.Subscriber("android_motor_speed",Twist, callback_speed)
 rospy.Subscriber("android_motor_steering",Twist, callback_steering)
 ack_publisher = rospy.Publisher('ackermann_cmd', AckermannDriveStamped, queue_size=1)

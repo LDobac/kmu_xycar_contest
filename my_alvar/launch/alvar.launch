@@ -1,10 +1,7 @@
 <launch>
-  <include file="$(find xycar_motor)/launch/xycar_motor.launch" />
   <include file="$(find usb_cam)/launch/xycar_cam.launch" />
-  <include file="$(find xycar_imu)/launch/xycar_imu.launch" />
-  <include file="$(find xycar_lidar)/launch/xycar_lidar.launch" />
 
-  <arg name="marker_size" default="9.0" />
+  <arg name="marker_size" default="4.4" />
   <arg name="max_new_marker_error" default="0.08" />
   <arg name="max_track_error" default="0.2" />
   <arg name="cam_image_topic" default="/usb_cam/image_raw" />
@@ -21,5 +18,5 @@
     <remap from="camera_info"   to="$(arg cam_info_topic)" />
   </node>
 
-  <node name="hough_drive" pkg="hough_drive" type="hough_drive_crosswalk.py" output="screen" />
+  <node name="my_alvar" pkg="my_alvar" type="alvar.py" output="screen" />
 </launch>

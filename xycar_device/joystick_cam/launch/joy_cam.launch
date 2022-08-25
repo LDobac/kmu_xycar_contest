@@ -18,6 +18,6 @@
   </node> -->
 
   <!-- android joy drive -->
-  <!-- <node name="joystick_cam" pkg="joystick_cam" type="joy_cam.py" output="screen"/> -->
+  <node name="joystick_cam" pkg="joystick_cam" type="joy_cam.py" output="screen"/>
 
 </launch>
