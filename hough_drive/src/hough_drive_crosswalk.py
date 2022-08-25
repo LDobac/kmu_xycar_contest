@@ -13,11 +13,14 @@ from sensor_msgs.msg import Imu
 from sensor_msgs.msg import LaserScan
 from cv_bridge import CvBridge
 from xycar_msgs.msg import xycar_motor
+from ar_track_alvar_msgs.msg import AlvarMarkers
 from math import *
 import signal
 import sys
 import os
 import random
+
+from glob import glob
 
 
 import torch
@@ -210,6 +213,11 @@ def lidar_callback(data):
     global lidar_points
     lidar_points = data.ranges
 
+alvar_markers = None
+
+def alvar_callback(markers):
+    global alvar_markers
+    alvar_markers = markers.markers
 
 class LidarManager:
     def __init__(self):
@@ -452,6 +460,7 @@ def start():
     motor = rospy.Publisher('xycar_motor', xycar_motor, queue_size=1)
     image_sub = rospy.Subscriber("/usb_cam/image_raw/",Image,img_callback)
     imu_sub = rospy.Subscriber("imu", Imu, imu_callback)
+    alvar_sub = rospy.Subscriber("/ar_pose_marker", AlvarMarkers, alvar_callback)
     rospy.Subscriber("/scan", LaserScan, lidar_callback, queue_size=1)
 
     dst_size = (81, 81)
@@ -482,6 +491,9 @@ def start():
     model.eval()
 
     print ("----- Xycar self driving -----")
+
+    for file in glob('/home/nvidia/output/*.*'):
+        os.remove(file)
 
     from time import time
 
@@ -550,7 +562,7 @@ def start():
 
         #vis = cv2.resize(img_112 * 0.5 + x * 0.5, (224, 224))
         
-        if imu is not None:
+        if imu is not None and alvar_markers is not None:
             cv2.imwrite('/home/nvidia/output/cam_{:06}.png'.format(frame_index), img)
             # cv2.imwrite('/home/nvidia/output/warp_{:06}.png'.format(frame_index), cv2.warpPerspective(img, T, dst_size))
             with open('/home/nvidia/output/imu_{:06}.txt'.format(frame_index), 'w') as txt_file:
@@ -560,6 +572,14 @@ def start():
                 txt_file.write('\n')
                 for value in lidar_points:
                     txt_file.write(str(value) + ' ')
+                txt_file.write('\n{}\n'.format(len(alvar_markers)))
+                for marker in alvar_markers:
+                    txt_file.write('{} {} {} {} {} {} {} {} {}\n'.format(
+                        marker.id,
+                        marker.confidence,
+                        marker.pose.pose.position.x, marker.pose.pose.position.y, marker.pose.pose.position.z,
+                        marker.pose.pose.orientation.x, marker.pose.pose.orientation.y, marker.pose.pose.orientation.z, marker.pose.pose.orientation.w
+                    ))
             frame_index += 1
         
         #lidar = np.zeros((360, ), dtype=np.float32)
@@ -603,6 +623,8 @@ def start():
                 speed = 0
 
         # mid = DetectCrosswalk(img, states)
+
+        angle = speed = 0
 
         # drive(angle, speed)
         # if mid is not None:
